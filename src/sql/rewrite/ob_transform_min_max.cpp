@@ -10,6 +10,7 @@
  * See the Mulan PubL v2 for more details.
  */
 
+#include "lib/ob_errno.h"
 #define USING_LOG_PREFIX SQL_REWRITE
 #include "ob_transform_min_max.h"
 #include "ob_transformer_impl.h"
@@ -133,16 +134,11 @@ int ObTransformMinMax::do_minmax_transform(ObSelectStmt *select_stmt)
 {
   int ret = OB_SUCCESS;
   ObSelectStmt *view_child_stmt = NULL;
-  ObSelectStmt *child_stmt = NULL;
-  ObAggFunRawExpr *aggr_expr = NULL;
-  ObRawExpr *aggr_param = NULL;
-  ObRawExpr *new_aggr_param = NULL;
+  ObArray<ObRawExpr *> aggr_params;
   ObSEArray<ObRawExpr*, 1> old_exprs;
   ObSEArray<ObRawExpr*, 1> new_exprs;
   ObArray<ObRawExpr *> aggr_items;
   ObArray<ObRawExpr *> query_ref_exprs;
-  ObQueryRefRawExpr *query_ref_expr = NULL;
-  ObRawExpr *target_expr = NULL;
   if (OB_ISNULL(select_stmt) || OB_ISNULL(ctx_) || OB_ISNULL(ctx_->expr_factory_)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("params have null", K(ret), K(select_stmt), K(ctx_));
@@ -156,40 +152,17 @@ int ObTransformMinMax::do_minmax_transform(ObSelectStmt *select_stmt)
       LOG_WARN("failed to get select exprs", K(ret));
     } else if (OB_FAIL(copier.add_replaced_expr(old_exprs, new_exprs))) {
       LOG_WARN("failed to add replace pair", K(ret));
-    } else if (OB_ISNULL(aggr_expr = select_stmt->get_aggr_item(0))
-          || OB_ISNULL(aggr_param = aggr_expr->get_param_expr(0))) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("get unexpected null", K(ret));
-    } else if (OB_FAIL(copier.copy(aggr_param, new_aggr_param))) {
-      LOG_WARN("failed to copy expr", K(ret));
-    } else if (OB_FAIL(deep_copy_subquery_for_aggr(*view_child_stmt,
-                                                    new_aggr_param,
-                                                    aggr_expr->get_expr_type(),
-                                                    child_stmt))) {
-      LOG_WARN("failed to deep copy subquery for aggr", K(ret));
-    } else if (OB_FAIL(aggr_items.push_back(aggr_expr))) {
-      LOG_WARN("failed to push back aggr item", K(ret));
-    } else if (OB_FAIL(ctx_->expr_factory_->create_raw_expr(T_REF_QUERY, query_ref_expr))) {
-      LOG_WARN("failed to create query ref expr", K(ret));
-    } else if (OB_ISNULL(query_ref_expr) || OB_ISNULL(child_stmt)
-                || OB_UNLIKELY(child_stmt->get_select_item_size() != 1)
-                || OB_ISNULL(target_expr = child_stmt->get_select_item(0).expr_)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("unexpected null expr or select item size of child stmt", K(ret));
-    } else {
-      query_ref_expr->set_ref_stmt(child_stmt);
-      query_ref_expr->set_output_column(1);
-      if (OB_FAIL(query_ref_expr->add_column_type(target_expr->get_result_type()))) {
-        LOG_WARN("add column type to subquery ref expr failed", K(ret));
-      } else if (OB_FAIL(query_ref_expr->formalize(ctx_->session_info_))) {
-        LOG_WARN("failed to formalize coalesce query expr", K(ret));
-      } else if (OB_FAIL(query_ref_exprs.push_back(query_ref_expr))) {
-        LOG_WARN("failed to push back query ref expr", K(ret));
-      }
+    } else if (OB_FAIL(get_aggr_exprs_and_child_stmts(*view_child_stmt,
+                                                      select_stmt->get_aggr_items(),
+                                                      copier,
+                                                      aggr_items,
+                                                      query_ref_exprs))) {
+      LOG_WARN("failed to get aggr exprs and child stmts");
     }
+
     // adjust select_stmt
     if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(select_stmt->replace_relation_exprs(aggr_items, query_ref_exprs))) {
+    } else if (OB_FAIL(select_stmt->replace_relation_exprs(aggr_items, query_ref_exprs))) { // 把聚合表达式替换成子查询表达式，目标是扩充这里的aggr_items和query_ref_exprs
       LOG_WARN("failed to replace aggr exprs to query ref exprs", K(ret));
     } else if (OB_FAIL(select_stmt->get_condition_exprs().assign(select_stmt->get_having_exprs()))) {
       LOG_WARN("failed to assign condition exprs", K(ret));
@@ -211,6 +184,60 @@ int ObTransformMinMax::do_minmax_transform(ObSelectStmt *select_stmt)
   return ret;
 }
 
+int ObTransformMinMax::get_aggr_exprs_and_child_stmts(const ObSelectStmt &copied_stmt,
+                                                      const common::ObIArray<ObAggFunRawExpr*> &old_aggr_items,
+                                                      ObRawExprCopier &copier,
+                                                      ObArray<ObRawExpr *> &aggr_items,
+                                                      ObArray<ObRawExpr *> &query_ref_exprs)
+{
+  int ret = OB_SUCCESS;
+  int aggr_count = old_aggr_items.count();
+  ObAggFunRawExpr *aggr_expr = NULL;
+  ObRawExpr *aggr_param = NULL;
+  ObRawExpr *new_aggr_param = NULL;
+  ObSelectStmt *child_stmt = NULL;
+  ObQueryRefRawExpr *query_ref_expr = NULL;
+  ObRawExpr *target_expr = NULL;
+  
+  for (int i = 0; i < aggr_count; i++) {
+    if (OB_ISNULL(aggr_expr = old_aggr_items.at(i)) // 这里取出第一个聚合表达式，尝试改成取出所有
+         || OB_ISNULL(aggr_param = aggr_expr->get_param_expr(0))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get unexpected null", K(ret));
+    } else if (OB_FAIL(copier.copy(aggr_param, new_aggr_param))) {
+        LOG_WARN("failed to copy expr", K(ret));
+    } else if (OB_FAIL(deep_copy_subquery_for_aggr(copied_stmt,
+                                                    new_aggr_param,
+                                                    aggr_expr->get_expr_type(),
+                                                    child_stmt))) { // 构建子查询
+      LOG_WARN("failed to deep copy subquery for aggr", K(ret));
+    } else  if (OB_FAIL(aggr_items.push_back(aggr_expr))) {
+        LOG_WARN("failed to push back aggr item", K(ret));
+    } else if (OB_FAIL(ctx_->expr_factory_->create_raw_expr(T_REF_QUERY, query_ref_expr))) {
+      LOG_WARN("failed to create query ref expr", K(ret));
+    } else if (OB_ISNULL(query_ref_expr) || OB_ISNULL(child_stmt)
+                || OB_UNLIKELY(child_stmt->get_select_item_size() != 1)
+                || OB_ISNULL(target_expr = child_stmt->get_select_item(0).expr_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected null expr or select item size of child stmt", K(ret));
+    } else {
+      query_ref_expr->set_ref_stmt(child_stmt);
+      query_ref_expr->set_output_column(1);
+      if (OB_FAIL(query_ref_expr->add_column_type(target_expr->get_result_type()))) {
+        LOG_WARN("add column type to subquery ref expr failed", K(ret));
+      } else if (OB_FAIL(query_ref_expr->formalize(ctx_->session_info_))) {
+        LOG_WARN("failed to formalize coalesce query expr", K(ret));
+      } else if (OB_FAIL(query_ref_exprs.push_back(query_ref_expr))) {
+        LOG_WARN("failed to push back query ref expr", K(ret));
+      }
+    }
+    aggr_items.push_back(aggr_expr);
+    query_ref_exprs.push_back(query_ref_expr);
+  }
+  return ret;
+}
+
+// 这里生成子查询的 statement，传给 child_stmt，需要传入聚合括号里面的表达式，和数据类型
 int ObTransformMinMax::deep_copy_subquery_for_aggr(const ObSelectStmt &copied_stmt,
                                                    ObRawExpr *aggr_param,
                                                    ObItemType aggr_type,

@@ -88,6 +88,12 @@ private:
 
   int set_child_order_item(ObSelectStmt *stmt, ObRawExpr *aggr_param, ObItemType aggr_type);
 
+  int get_aggr_exprs_and_child_stmts(const ObSelectStmt &copied_stmt,
+                                     const common::ObIArray<ObAggFunRawExpr*> &old_aggr_items,
+                                     ObRawExprCopier &copier,
+                                     ObArray<ObRawExpr *> &aggr_items,
+                                     ObArray<ObRawExpr *> &query_ref_exprs);
+  
   static int is_valid_aggr_items(ObTransformerCtx &ctx, const ObSelectStmt &stmt, bool &is_valid);
 
   static int is_valid_select_list(const ObSelectStmt &stmt, bool &is_valid);
