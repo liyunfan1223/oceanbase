@@ -205,14 +205,12 @@ int ObTransformMinMax::get_aggr_exprs_and_child_stmts(const ObSelectStmt &copied
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("get unexpected null", K(ret));
     } else if (OB_FAIL(copier.copy(aggr_param, new_aggr_param))) {
-        LOG_WARN("failed to copy expr", K(ret));
+      LOG_WARN("failed to copy expr", K(ret));
     } else if (OB_FAIL(deep_copy_subquery_for_aggr(copied_stmt,
                                                     new_aggr_param,
                                                     aggr_expr->get_expr_type(),
                                                     child_stmt))) { // 构建子查询
       LOG_WARN("failed to deep copy subquery for aggr", K(ret));
-    } else  if (OB_FAIL(aggr_items.push_back(aggr_expr))) {
-        LOG_WARN("failed to push back aggr item", K(ret));
     } else if (OB_FAIL(ctx_->expr_factory_->create_raw_expr(T_REF_QUERY, query_ref_expr))) {
       LOG_WARN("failed to create query ref expr", K(ret));
     } else if (OB_ISNULL(query_ref_expr) || OB_ISNULL(child_stmt)
@@ -227,8 +225,6 @@ int ObTransformMinMax::get_aggr_exprs_and_child_stmts(const ObSelectStmt &copied
         LOG_WARN("add column type to subquery ref expr failed", K(ret));
       } else if (OB_FAIL(query_ref_expr->formalize(ctx_->session_info_))) {
         LOG_WARN("failed to formalize coalesce query expr", K(ret));
-      } else if (OB_FAIL(query_ref_exprs.push_back(query_ref_expr))) {
-        LOG_WARN("failed to push back query ref expr", K(ret));
       }
     }
     aggr_items.push_back(aggr_expr);
